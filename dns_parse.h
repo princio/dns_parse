@@ -63,6 +63,8 @@ typedef struct {
     struct ip_fragment * ip_fragment_head;
     unsigned long long * dedup_hashes;
     uint32_t dedup_pos;
+    FILE* file;
+    void *tld_tree;
 } config;
 
 // Holds the information for a dns question.
@@ -85,6 +87,12 @@ typedef struct dns_rr {
     char * data;
     struct dns_rr * next;
 } dns_rr;
+
+typedef struct rr_text {
+    char A[2000];
+    char MX[2000];
+    char AAAA[2000];
+} rr_text;
 
 // Holds general DNS information.
 typedef struct {
@@ -124,6 +132,8 @@ uint32_t dns_parse(uint32_t pos, struct pcap_pkthdr *header,
 // Print the information in the given packet information objects according
 // to the settings in the configuration struct.
 void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
+                   struct pcap_pkthdr * header, config * conf);
+void print_summary2(ip_info * ip, transport_info * trns, dns_info * dns,
                    struct pcap_pkthdr * header, config * conf);
 // Print packet bytes in hex.
 // max_len - Maximum packet offset.

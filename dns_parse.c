@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <regdom.h>
+
 
 #include "network.h"
 #include "tcp.h"
@@ -20,7 +22,7 @@ void dns_rr_free(dns_rr *);
 void dns_question_free(dns_question *);
 uint32_t parse_rr(uint32_t, uint32_t, struct pcap_pkthdr *, 
                   uint8_t *, dns_rr *, config *);
-void print_rr_section(dns_rr *, char *, config *);
+void print_rr_section(dns_rr *, char *, config *, rr_text* text, uint16_t qtype, uint16_t id);
 void print_packet(uint32_t, uint8_t *, uint32_t, uint32_t, u_int);
 int dedup(uint32_t, struct pcap_pkthdr *, uint8_t *,
           ip_info *, transport_info *, config *);
@@ -243,6 +245,18 @@ int main(int argc, char **argv) {
 
     conf.ip_fragment_head = NULL;
 
+
+    printf("Excludes: %d\n", conf.EXCLUDES);
+    for (int i=0; i < conf.EXCLUDES; i++)
+    {
+        printf("Excluded %d: %u\n", i, conf.EXCLUDED[i]);
+    }
+
+    conf.file = fopen("/tmp/dnsparse.csv", "w");
+    conf.tld_tree = loadTldTree();
+
+    fprintf(conf.file, "time,size,protocol,server,message_ID,qr,AA,rcode,dn,bdn,qcode,qdcount,ancount,nscount,arcount,answer\n");
+
     // Load and prior TCP session info
     conf.tcp_sessions_head = NULL; 
     if (TCP_SAVE_STATE == 1) {
@@ -271,6 +285,8 @@ int main(int argc, char **argv) {
     } VERBOSE( else fprintf(stderr, "pcap_dispatch: %d packets processed\n", read); )
 
     pcap_close(pcap_file);
+    fclose(conf.file);
+    freeTldTree(conf.tld_tree);
 
     return 0;
 }
@@ -333,7 +349,7 @@ void handler(uint8_t * args, const struct pcap_pkthdr *orig_header,
             }
         }
         pos = dns_parse(pos, &header, packet, &dns, conf, !FORCE);
-        print_summary(&ip, &udp, &dns, &header, conf);
+        print_summary2(&ip, &udp, &dns, &header, conf);
     } else if (ip.proto == 6) {
         // Hand the tcp packet over for later reconstruction.
         tcp_parse(pos, &header, packet, &ip, conf); 
@@ -360,6 +376,12 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     uint32_t dnslength;
     dns_question *qnext;
 
+    // MODIFIED BY OVERET
+    //if (dns->rcode != 3)
+    //	return;
+    // END MODIFIED BY OVERET
+
+    printf("%d,", dns->id);
     print_ts(&(header->ts), conf);
 
     // Print the transport protocol indicator.
@@ -373,9 +395,23 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     dnslength = trns->length;
 
     // Print the IP addresses and the basic query information.
+    /***** ORIGINAL *****
     printf(",%s,", iptostr(&ip->src));
     printf("%s,%d,%c,%c,%s", iptostr(&ip->dst),
            dnslength, proto, dns->qr ? 'r':'q', dns->AA?"AA":"NA");
+    ****** MODIFIED BY OVERET */
+    //char *ip_src = iptostr(&ip->src); //DNS
+    //char *ip_dst = iptostr(&ip->dst); //client
+    //printf("%s",ip_src);
+    //printf("%s",ip_dst);
+    //unsigned long  ip_src_crc = crc32(0L, Z_NULL, 0);
+    //unsigned long  ip_dst_crc = crc32(0L, Z_NULL, 0);
+    //ip_src_crc = crc32(ip_src_crc, (const unsigned char*)ip_src, strlen(ip_src));
+    //ip_dst_crc = crc32(ip_dst_crc, (const unsigned char*)ip_dst, strlen(ip_dst));
+    printf(",%s,", iptostr(&ip->src));
+    printf("%s,%d,%c,%c,%s,%d", iptostr(&ip->dst),
+           	dnslength, proto, dns->qr ? 'r':'q', dns->AA?"AA":"NA", dns->rcode);
+    // END MODIFIED BY OVERET
 
     if (conf->COUNTS) {
         printf(",%u?,%u!,%u$,%u+", dns->qdcount, dns->ancount, 
@@ -399,12 +435,12 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     }
 
     // Print it resource record type in turn (for those enabled).
-    print_rr_section(dns->answers, "!", conf);
-    if (conf->NS_ENABLED) 
-        print_rr_section(dns->name_servers, "$", conf);
-    if (conf->AD_ENABLED) 
-        print_rr_section(dns->additional, "+", conf);
-    printf("%c%s\n", conf->SEP, conf->RECORD_SEP);
+    // print_rr_section(dns->answers, "!", conf, NULL, 0);
+    // if (conf->NS_ENABLED) 
+    //     print_rr_section(dns->name_servers, "$", conf, NULL, 0);
+    // if (conf->AD_ENABLED) 
+    //     print_rr_section(dns->additional, "+", conf, NULL, 0);
+    // printf("%c%s\n", conf->SEP, conf->RECORD_SEP);
     
     dns_question_free(dns->queries);
     dns_rr_free(dns->answers);
@@ -414,37 +450,107 @@ void print_summary(ip_info * ip, transport_info * trns, dns_info * dns,
     fflush(stderr);
 }
 
+
+void print_summary2(ip_info * ip, transport_info * trns, dns_info * dns,
+                   struct pcap_pkthdr * header, config * conf) {
+    char proto;
+
+    dns_question *qnext;
+    char ts[40];
+
+    if (ip->proto == 17) proto = 'u';
+    else if (ip->proto == 6) proto = 't';
+    else return;
+    
+    sprintf(ts, "%d.%06d", (int)header->ts.tv_sec, (int)header->ts.tv_usec);
+    char rcode_str[3] = "";
+    sprintf(rcode_str, "%c", dns->rcode);
+    sprintf(ts, "%d.%06d", (int)header->ts.tv_sec, (int)header->ts.tv_usec);
+    fprintf(conf->file, "%s,%d,%c,%s,%u,%c,%s,%hhu,",
+        ts,
+        trns->length, //dns length
+        proto,
+        dns->qr ? iptostr(&ip->src) : iptostr(&ip->dst),
+        dns->id,
+        dns->qr ? 'r' : 'q',
+        dns->qr ? (dns->AA ? "1": "0") : "",
+        dns->rcode
+    );
+
+
+    // Go through the list of queries, and print each one.
+    if (dns->qdcount > 1) {
+        printf("WARNING: more than one question (%d)", dns->qdcount);
+    }
+    FILE* out = conf->file;
+    qnext = dns->queries;
+    uint16_t first_qtype = 1;
+    char first_name[500];
+    memset(first_name, 0, 500);
+    while (qnext != NULL) {
+        char * bdn = getRegisteredDomain(qnext->name, conf->tld_tree);
+        fprintf(out, "%s,%s,%u,", qnext->name, bdn == NULL ? "ukw" : bdn, qnext->type);
+        if (!strlen(first_name)) {
+            first_qtype = qnext->type;
+            memcpy(first_name, qnext->name, strlen(qnext->name));
+        }
+        qnext = qnext->next; 
+        out = stdout;
+    }
+
+    fprintf(conf->file, "%u,%u,%u,%u,", dns->qdcount, dns->ancount, dns->nscount, dns->arcount);
+
+    // Print it resource record type in turn (for those enabled).
+    rr_text text;
+    memset(&text, 0, sizeof(text));
+    print_rr_section(dns->answers, first_name, conf, &text, first_qtype, dns->id);
+    fprintf(conf->file, "\"%s\"", text.A);
+
+    fprintf(conf->file, "\n");
+
+    // fprintf(conf->file, "\"%s\",", text.MX);
+    // fprintf(conf->file, "\"%s\"\n", text.AAAA);
+
+    // memset(&text, 0, sizeof(text));
+    // print_rr_section(dns->name_servers, first_name, conf, &text, 1);
+    // fprintf(conf->file, "\"%s\",", text.A);
+    // fprintf(conf->file, "\"%s\",", text.MX);
+    // fprintf(conf->file, "\"%s\",", text.AAAA);
+    
+    // memset(&text, 0, sizeof(text));
+    // print_rr_section(dns->additional, first_name, conf, &text, 2);
+    // fprintf(conf->file, "\"%s\",", text.A);
+    // fprintf(conf->file, "\"%s\",", text.MX);
+    // fprintf(conf->file, "\"%s\"\n", text.AAAA);
+
+    dns_question_free(dns->queries);
+    dns_rr_free(dns->answers);
+    dns_rr_free(dns->name_servers);
+    dns_rr_free(dns->additional);
+    fflush(conf->file); 
+    fflush(stdout); 
+    fflush(stderr);
+}
+
 // Print all resource records in the given section.
-void print_rr_section(dns_rr * next, char * name, config * conf) {
-    int skip;
-    int i;
+void print_rr_section(dns_rr * next, char * name, config * conf, rr_text *text, uint16_t qtype, uint16_t id) {
     while (next != NULL) {
-        // Print the rr seperator and rr section name.
-        printf("%c%s", conf->SEP, name);
-        skip = 0;
-        // Search the excludes list to see if we should not print this
-        // rtype.
-        for (i=0; i < conf->EXCLUDES && skip == 0; i++) 
-            if (next->type == conf->EXCLUDED[i]) skip = 1;
-        if (!skip) {
-            char *name, *data;
-            name = (next->name == NULL) ? "*empty*" : next->name;
-            data = (next->data == NULL) ? "*empty*" : next->data;
-            if (conf->PRINT_RR_NAME) { 
-                if (next->rr_name == NULL) 
-                    // Handle bad records.
-                    printf(" %s UNKNOWN(%d,%d) %s", name, next->type, 
-                                                    next->cls, data);
-                else
-                    // Print the string rtype name with the rest of the record.
-                    printf(" %s %s %s", name, next->rr_name, data);
-            } else
-                // The -r option case. 
-                // Print the rtype and class number with the record.
-                printf(" %s %d %d %s", name, next->type, next->cls, data);
+        char *name, *data;
+        name = (next->name == NULL) ? "*empty*" : next->name;
+        data = (next->data == NULL) ? "*empty*" : next->data;
+        if (!strcmp(name, next->name) && next->type == qtype) {
+            size_t l = strlen(text->A) + strlen(data);
+            if (l > 2000)
+                printf("Avoiding overflow: %zd > 2000.\n", l);
+            else
+                sprintf(text->A + strlen(text->A), "%s;", data);
+        }
+        else {
+            printf("Skipping[%6u]: type=%u\tname=%-50s\tdata=%s\n", id, next->type, name, data);
         }
         next = next->next; 
     }
+    text->A[strlen(text->A)-1] = '\0';
 }
 
 // Print packet bytes in hex.

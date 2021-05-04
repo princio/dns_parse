@@ -26,7 +26,7 @@ OBJ=rtypes.o strutils.o network.o tcp.o
 
 bin/dns_parse: dns_parse.c ${OBJ}
 	mkdir -p bin
-	${CC} ${CFLAGS} ${DEBUG} ${OBJ} -o bin/dns_parse dns_parse.c -lpcap
+	${CC} ${CFLAGS} ${DEBUG} ${OBJ} -o bin/dns_parse dns_parse.c -lpcap -lregdom
 
 rtypes.o: rtypes.c rtypes.h
 	${CC} ${CFLAGS} ${DEBUG} -c rtypes.c
